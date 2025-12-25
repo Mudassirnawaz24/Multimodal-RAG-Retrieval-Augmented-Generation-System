@@ -1,0 +1,207 @@
+# Usage:
+#   Production: docker-compose up -d
+#   Development (hot reload): docker-compose --profile dev up -d
+#
+# Ollama Toggle (via .env):
+#   - Set USE_OLLAMA_EMBEDDINGS=true  → Ollama starts and downloads model (multimodal)
+#   - Set USE_OLLAMA_EMBEDDINGS=false → Ollama does NOT start (text-only, serverless)
+#   Note: When OFF, Ollama container won't start, saving resources and startup time
+
+services:
+  # Ollama service for embeddings (only starts when USE_OLLAMA_EMBEDDINGS=true)
+  # To disable: Set USE_OLLAMA_EMBEDDINGS=false in .env
+  ollama:
+    profiles:
+      - ollama  # Only start when explicitly enabled
+    image: ollama/ollama:latest
+    container_name: multimodal-rag-ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s  # Increased to give Ollama more time to initialize
+    networks:
+      - rag-network
+
+  # Init service: Automatically pull embedding model after Ollama is ready
+  # Only runs when Ollama service is enabled (USE_OLLAMA_EMBEDDINGS=true)
+  ollama-init:
+    profiles:
+      - ollama  # Only start when Ollama is enabled
+    image: curlimages/curl:latest
+    container_name: multimodal-rag-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - rag-network
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL_ID:-embeddinggemma:latest}
+    command: >
+      sh -c "
+      echo 'Waiting for Ollama API to be ready...' &&
+      until curl -f http://ollama:11434/api/tags > /dev/null 2>&1; do
+        echo 'Waiting for Ollama...';
+        sleep 2;
+      done &&
+      echo 'Checking if model already exists...' &&
+      if curl -s http://ollama:11434/api/tags | grep -q 'embeddinggemma:latest'; then
+        echo 'Model embeddinggemma:latest already exists. Skipping pull.';
+      else
+        echo 'Pulling embedding model: embeddinggemma:latest' &&
+        curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"embeddinggemma:latest\"}' &&
+        echo 'Model pull complete!';
+      fi &&
+      echo 'Available models:' &&
+      curl -s http://ollama:11434/api/tags | grep -o '\"name\":\"[^\"]*\"' | sed 's/\"name\":\"//;s/\"$//' &&
+      echo 'Ollama initialization complete!'
+      "
+    restart: "no"  # Only run once, don't restart
+
+  # Backend FastAPI service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: multimodal-rag-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/chroma_db:/app/chroma_db
+      - backend-logs:/app/data/logs
+      - ./.env:/app/.env:ro  # Mount root .env (accessible as /app/.env in Docker)
+    env_file:
+      - .env  # Root .env file (primary)
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - CHAT_MODEL_ID=${CHAT_MODEL_ID:-gemini-2.0-flash}
+      - TEXT_SUMMARIZER_MODEL_ID=${TEXT_SUMMARIZER_MODEL_ID:-gemini-2.0-flash}
+      - IMAGE_SUMMARIZER_MODEL_ID=${IMAGE_SUMMARIZER_MODEL_ID:-gemini-2.0-flash}
+      - EMBEDDING_API_MODEL_ID=${EMBEDDING_API_MODEL_ID:-models/text-embedding-004}
+      - USE_OLLAMA_EMBEDDINGS=${USE_OLLAMA_EMBEDDINGS:-true}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - EMBEDDING_MODEL_ID=${EMBEDDING_MODEL_ID:-embeddinggemma:latest}
+      - CORS_ALLOW_ALL=${CORS_ALLOW_ALL:-true}
+      - DATABASE_URL=sqlite:///./data/app.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TEXT_SUMMARIZER_MAX_WORKERS=${TEXT_SUMMARIZER_MAX_WORKERS:-4}
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-25}
+    # Backend works with or without Ollama based on USE_OLLAMA_EMBEDDINGS env var
+    # When USE_OLLAMA_EMBEDDINGS=false, backend uses Google Gemini API embeddings
+    # Note: Ollama is in a profile, so depends_on only matters when profile is active
+    # Backend code checks USE_OLLAMA_EMBEDDINGS before connecting, so it's safe
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Development backend (hot reload) - use: docker-compose --profile dev up
+  backend-dev:
+    profiles:
+      - dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: multimodal-rag-backend-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+      - ./backend/chroma_db:/app/chroma_db
+      - backend-logs:/app/data/logs
+      - ./.env:/app/.env:ro  # Mount root .env (accessible as /app/.env in Docker)
+    env_file:
+      - .env  # Root .env file (primary)
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - CHAT_MODEL_ID=${CHAT_MODEL_ID:-gemini-2.0-flash}
+      - TEXT_SUMMARIZER_MODEL_ID=${TEXT_SUMMARIZER_MODEL_ID:-gemini-2.0-flash}
+      - IMAGE_SUMMARIZER_MODEL_ID=${IMAGE_SUMMARIZER_MODEL_ID:-gemini-2.0-flash}
+      - EMBEDDING_API_MODEL_ID=${EMBEDDING_API_MODEL_ID:-models/text-embedding-004}
+      - USE_OLLAMA_EMBEDDINGS=${USE_OLLAMA_EMBEDDINGS:-true}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - EMBEDDING_MODEL_ID=${EMBEDDING_MODEL_ID:-embeddinggemma:latest}
+      - CORS_ALLOW_ALL=${CORS_ALLOW_ALL:-true}
+      - DATABASE_URL=sqlite:///./data/app.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TEXT_SUMMARIZER_MAX_WORKERS=${TEXT_SUMMARIZER_MAX_WORKERS:-4}
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-25}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Backend works with or without Ollama based on USE_OLLAMA_EMBEDDINGS env var
+    # When USE_OLLAMA_EMBEDDINGS=false, backend uses Google Gemini API embeddings
+    # Note: Ollama is in a profile, so depends_on only matters when profile is active
+    # Backend code checks USE_OLLAMA_EMBEDDINGS before connecting, so it's safe
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # Frontend React service (production build)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE=${VITE_API_BASE:-http://localhost:8000}
+    container_name: multimodal-rag-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # Development frontend (hot reload) - use: docker-compose --profile dev up
+  frontend-dev:
+    profiles:
+      - dev
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: multimodal-rag-frontend-dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      - backend-dev
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  ollama-data:
+    driver: local
+  backend-logs:
+    driver: local
+
