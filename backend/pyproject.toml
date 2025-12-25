@@ -1,0 +1,54 @@
+[tool.poetry]
+name = "multimodal-rag-backend"
+version = "0.1.0"
+description = "FastAPI backend for multimodal RAG"
+authors = ["Your Name <you@example.com>"]
+package-mode = false
+
+# NOTE: System dependencies required (install separately):
+# macOS: brew install poppler tesseract libmagic
+# Linux: sudo apt-get install poppler-utils tesseract-ocr libmagic-dev
+# Windows: choco install poppler tesseract libmagic
+# These are needed for unstructured[all-docs] PDF processing
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+pydantic = "*"
+pydantic-settings = "*"
+python-multipart = "*"
+SQLAlchemy = "*"
+langchain = "*"
+langchain-community = "*"
+langchain-ollama = "*"
+langchain-google-genai = "*"
+langchain-chroma = "*"
+chromadb = "*"
+unstructured = {extras = ["all-docs"], version = "*"}
+"pdfminer.six" = "*"
+Pillow = "*"
+pi-heif = "*"
+unstructured_inference = "*"
+pdf2image = "*"
+tiktoken = "*"
+python-dotenv = "*"
+pypdf = "*"
+openai = "*"
+sse-starlette = "*"
+transformers = "*"
+torch = "*"
+sentence-transformers = "*"
+accelerate = "*"
+safetensors = "*"
+ipywidgets = "*"
+jupyter = "*"
+peft = "*"
+torchvision = "*"
+
+[tool.poetry.group.dev.dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
